@@ -24,25 +24,19 @@
 
 import termios, select, os, sys, curses, fcntl, struct
 
-class TISelectDrawing:
-    def __init__(self, term):
-        if term['acsc'] and term['smacs'] and term['rmacs']:
-            self.asc = True
-        else:
-            self.asc = False
-        self.drawing_tab = {
-            'ulcorner':     ['+', 'l'],
-            'urcorner':     ['+', 'k'],
-            'hline':        ['-', 'q'],
-            'vline':        ['|', 'x'],
-        }
-    def draw_top(self):
-        pass
-
-class TISelectTerminal:
+class TerminalInfo:
     def __init__(self):
         curses.setupterm()
-        _ti = curses.tigetstr
+        def _ti(cap):
+            # Why does python's curses not expose tputs?!  We can't use putp!
+            # For now, just strip delay stuff, print it ourselves, and hope it
+            # works.
+            string = curses.tigetstr(cap)
+            if string:
+                idx = string.find('$<')
+                if idx != -1:
+                    return string[:idx]
+            return string
         self.term = {
             'up':       ['\33[A', _ti('kcuu1')],
             'down':     ['\33[B', _ti('kcud1')],
@@ -53,6 +47,7 @@ class TISelectTerminal:
             'pgdn':     _ti('knp'),
             'enter':    '\n',
             'reverse':  _ti('rev'),
+            'bold':     _ti('bold'),
             'normal':   _ti('sgr0'),
             'c_invis':  _ti('civis'),
             'c_normal': _ti('cnorm'),
@@ -60,8 +55,18 @@ class TISelectTerminal:
             'smacs':    _ti('smacs'),
             'rmacs':    _ti('rmacs')
         }
+        # ACS is weird, from what I can understand, the string gives, in pairs,
+        # the VT100 character, documented in terminfo(5), followed by the
+        # character for this terminal (so for VT100 they're identical pairs).
+        acsc = self.term['acsc']
+        if acsc:
+            self.acs_table = {}
+            for i in range(0, len(acsc)-1, 2):
+                self.acs_table[acsc[i]] = acsc[i+1]
         if self.term['c_invis']:
             self.term['c_invis'] += '\r'
+        # OpenBSD and FreeBSD both choked on a single read-write file handle,
+        # so now they're separate handles for input and output.
         self.tty_in = open('/dev/tty', 'rb+', 0)
         self.tty_out = open('/dev/tty', 'wb+', 0)
         self.get_terminal_size()
@@ -73,21 +78,24 @@ class TISelectTerminal:
                 struct.pack('HHHH', 0, 0, 0, 0)))
 
 class TISelect:
-    def __init__(self, items, box=False, title=None):
+    def __init__(self, items, box=False, title=''):
         self.items = items
         self.box = box
         self.title = title
-        self.term = TISelectTerminal()
+        self.term = TerminalInfo()
         self.selected = 0
-        self.width = min(max(map(len, self.items)), self.term.w - 6)
+        self.width = min(max(map(len, self.items + [title])), self.term.w - 6)
+        if len(title) > self.width:
+            self.title = title[:self.width-3] + '...'
         self.height = min(len(items), self.term.h / 3)
         if self.height < len(items):
             self.scrollbar = True
         else:
             self.scrollbar = False
+        self.draw_init()
     def ptty(self, stuff):
         self.term.tty_out.write(stuff)
-    def draw_item(self, item):
+    def crop_item(self, item):
         if len(item) > self.width:
             return item[:self.width-3] + '...'
         else:
@@ -102,43 +110,129 @@ class TISelect:
             start -= end - (len(self.items)-1)
             end = len(self.items)-1
         return start <= n <= end
+    def draw_init(self):
+        if self.term['acsc'] and self.term['smacs'] and self.term['rmacs']:
+            self.acs = True
+            self.tab_idx = 1
+        else:
+            self.acs = False
+            self.tab_idx = 0
+        self.drawing_tab = {
+            'ulcorner':     ['+', self.term.acs_table['l']],
+            'urcorner':     ['+', self.term.acs_table['k']],
+            'hline':        ['-', self.term.acs_table['q']],
+            'vline':        ['|', self.term.acs_table['x']],
+            'llcorner':     ['+', self.term.acs_table['m']],
+            'lrcorner':     ['+', self.term.acs_table['j']]
+        }
+    def draw_char(self, char_name):
+        return self.drawing_tab[char_name][self.tab_idx]
+    def draw_start(self):
+        if self.acs:
+            return self.term['smacs']
+        else:
+            return ''
+    def draw_stop(self):
+        if self.acs:
+            return self.term['rmacs']
+        else:
+            return ''
+    def draw_title(self, box=False):
+        if box:
+            self.ptty(self.term['bold'] +
+                      ' ' + self.title + ' ' +
+                      self.term['normal'])
+        else:
+            pad = ((self.width + 2) - len(self.title)) / 2
+            self.ptty(' ' * pad +
+                      self.term['bold'] +
+                      self.title +
+                      self.term['normal'] +
+                      "\n")
+    def draw_box_top(self):
+        if self.title:
+            padl = ((self.width + 2) - (len(self.title) + 2)) / 2
+            padr = padl
+            if padl + padr + len(self.title) + 2 != self.width + 2:
+                padr += 1
+            self.ptty(self.draw_start() +
+                      self.draw_char('ulcorner') +
+                      self.draw_char('hline') * padl +
+                      self.draw_stop() +
+                      self.draw_title(box=True) +
+                      self.draw_start() +
+                      self.draw_char('hline') * padr +
+                      self.draw_char('urcorner') +
+                      self.draw_stop() +
+                      "\n")
+        else:
+            self.ptty(self.draw_start() +
+                      self.draw_char('ulcorner') +
+                      self.draw_char('hline') * (self.width + 2) +
+                      self.draw_char('urcorner') +
+                      self.draw_stop() +
+                      "\n")
+    def draw_box_bottom(self):
+        self.ptty("\n" +
+                  self.draw_start() +
+                  self.draw_char('llcorner') +
+                  self.draw_char('hline') * (self.width + 2) +
+                  self.draw_char('lrcorner') +
+                  self.draw_stop())
+    def draw_box_left_side(self):
+        self.ptty(self.draw_start() +
+                  self.draw_char('vline') +
+                  self.draw_stop())
+    def draw_box_right_side(self):
+        # Identical, for now.
+        self.draw_box_left_side()
+    def draw_item(self, item, selected=False):
+        fmt = " %%-%ds " % self.width
+        if selected:
+            self.ptty(self.term['reverse'] + fmt % item + self.term['normal'])
+        else:
+            self.ptty(fmt % item)
+    def draw_rewind(self):
+        real_height = self.height
+        if self.box:
+            real_height += 2
+        elif self.title:
+            real_height += 1
+        self.ptty(self.term['t_up'] * real_height + "\n")
     def draw_scrollbar(self, n):
         lineno = round((self.height-1) *
                        (self.selected / float(len(self.items)-1)))
         if lineno == n:
-            return self.term['reverse'] +'#'+ self.term['normal']
+            self.ptty(self.term['reverse'] + '#' + self.term['normal'])
         else:
-            return '|'
+            self.draw_box_right_side()
     def draw(self, rewind=True, no_selection=False):
-        real_height = self.height
-        box_l = box_r = ""
-        if self.box:
-            box_l = "|"
-            if not self.scrollbar:
-                box_r = "|"
-            real_height += 2
         if rewind:
-            self.ptty(self.term['t_up'] * real_height + "\n")
-        fmt = "%%s%%s %%-%ds %%s%%s" % self.width
+            self.draw_rewind()
         count = 0
         if self.box:
-            #self.ptty('+' + '-'*(self.width+2) + '+' + "\n")
-            self.ptty(self.term['smacs'] + 'l' + 'q'*(self.width+2) + 'k' + self.term['rmacs'] + "\n")
+            self.draw_box_top()
+        elif self.title:
+            self.draw_title(box=False)
         for i, item in enumerate(self.items):
             if not self.visible(i):
                 continue
-            it = self.draw_item(item)
+            it = self.crop_item(item)
+            if self.box:
+                self.draw_box_left_side()
             if i == self.selected and not no_selection:
-                self.ptty(fmt % (box_l, self.term['reverse'], it, self.term['normal'], box_r))
+                self.draw_item(it, selected=True)
             else:
-                self.ptty(fmt % (box_l, "", it, "", box_r))
+                self.draw_item(it)
             if self.scrollbar:
-                self.ptty(self.draw_scrollbar(count))
+                self.draw_scrollbar(count)
+            elif self.box:
+                self.draw_box_right_side()
             if count < self.height-1:
                 self.ptty("\n")
             count += 1
         if self.box:
-            self.ptty('\n+' + '-'*(self.width+2) + '+')
+            self.draw_box_bottom()
     def update(self):
         stuff = os.read(self.term.tty_in.fileno(), 512)
         if stuff in ['a', 'k'] + self.term['up']:
@@ -182,7 +276,7 @@ class TISelect:
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         sys.exit("Usage: %s <item1> <item2> [<item3> [...]]" % sys.argv[0])
-    tis = TISelect(sys.argv[1:], box=True)
+    tis = TISelect(sys.argv[1:])
     try:
         tis.run()
     except KeyboardInterrupt:
