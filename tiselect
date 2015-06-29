@@ -21,8 +21,9 @@
 # TODO: Paddings, themes (colours?)
 # TODO: Header text
 # TODO: Python3
+# TODO: Searching?
 
-import termios, select, os, sys, curses, fcntl, struct
+import termios, select, os, sys, curses, fcntl, struct, argparse
 
 class TerminalInfo:
     def __init__(self):
@@ -59,8 +60,8 @@ class TerminalInfo:
         # the VT100 character, documented in terminfo(5), followed by the
         # character for this terminal (so for VT100 they're identical pairs).
         acsc = self.term['acsc']
+        self.acs_table = {}
         if acsc:
-            self.acs_table = {}
             for i in range(0, len(acsc)-1, 2):
                 self.acs_table[acsc[i]] = acsc[i+1]
         if self.term['c_invis']:
@@ -76,19 +77,33 @@ class TerminalInfo:
         self.h, self.w, _, _ = struct.unpack('HHHH',
             fcntl.ioctl(self.tty_out, termios.TIOCGWINSZ,
                 struct.pack('HHHH', 0, 0, 0, 0)))
+        if self.h == 0:
+            self.h = 24
+        if self.w == 0:
+            self.w = 80
+    def has_full_acs(self):
+        return all(map(lambda x: x in self.acs_table,
+                       ['l', 'k', 'q', 'x', 'm', 'j']))
 
 class TISelect:
-    def __init__(self, items, box=False, title=''):
+    def __init__(self, items, opts):
         self.items = items
-        self.box = box
-        self.title = title
+        self.opts = opts
+        self.box = opts.box
+        self.title = opts.title or ""
         self.term = TerminalInfo()
+        if not self.term['t_up']:
+            sys.exit("Error: Terminal has no cursor up capability.")
         self.selected = 0
-        self.width = min(max(map(len, self.items + [title])), self.term.w - 6)
-        if len(title) > self.width:
-            self.title = title[:self.width-3] + '...'
-        self.height = min(len(items), self.term.h / 3)
-        if self.height < len(items):
+        self.width = min(max(map(len, self.items + [self.title])),
+                         self.term.w - 6)
+        if len(self.title) > self.width:
+            self.title = self.title[:self.width-3] + '...'
+        if opts.height:
+            self.height = min(len(items), opts.height)
+        else:
+            self.height = min(len(items), self.term.h / 3)
+        if (self.height < len(items) and not opts.no_scrollbar) or opts.scrollbar:
             self.scrollbar = True
         else:
             self.scrollbar = False
@@ -111,22 +126,24 @@ class TISelect:
             end = len(self.items)-1
         return start <= n <= end
     def draw_init(self):
-        if self.term['acsc'] and self.term['smacs'] and self.term['rmacs']:
+        if self.term.has_full_acs() and self.term['smacs']\
+           and self.term['rmacs'] and not self.opts.ascii:
             self.acs = True
-            self.tab_idx = 1
         else:
             self.acs = False
-            self.tab_idx = 0
         self.drawing_tab = {
-            'ulcorner':     ['+', self.term.acs_table['l']],
-            'urcorner':     ['+', self.term.acs_table['k']],
-            'hline':        ['-', self.term.acs_table['q']],
-            'vline':        ['|', self.term.acs_table['x']],
-            'llcorner':     ['+', self.term.acs_table['m']],
-            'lrcorner':     ['+', self.term.acs_table['j']]
+            'ulcorner':     ['+', 'l'],
+            'urcorner':     ['+', 'k'],
+            'hline':        ['-', 'q'],
+            'vline':        ['|', 'x'],
+            'llcorner':     ['+', 'm'],
+            'lrcorner':     ['+', 'j']
         }
     def draw_char(self, char_name):
-        return self.drawing_tab[char_name][self.tab_idx]
+        if self.acs:
+            return self.term.acs_table[self.drawing_tab[char_name][1]]
+        else:
+            return self.drawing_tab[char_name][0]
     def draw_start(self):
         if self.acs:
             return self.term['smacs']
@@ -139,15 +156,15 @@ class TISelect:
             return ''
     def draw_title(self, box=False):
         if box:
-            self.ptty(self.term['bold'] +
-                      ' ' + self.title + ' ' +
-                      self.term['normal'])
+            self.ptty(' ' + (self.term['bold'] or '*') +
+                      self.title +
+                      (self.term['normal'] or '*') + ' ')
         else:
             pad = ((self.width + 2) - len(self.title)) / 2
             self.ptty(' ' * pad +
-                      self.term['bold'] +
+                      (self.term['bold'] or '*') +
                       self.title +
-                      self.term['normal'] +
+                      (self.term['normal'] or '*') +
                       "\n")
     def draw_box_top(self):
         if self.title:
@@ -158,9 +175,9 @@ class TISelect:
             self.ptty(self.draw_start() +
                       self.draw_char('ulcorner') +
                       self.draw_char('hline') * padl +
-                      self.draw_stop() +
-                      self.draw_title(box=True) +
-                      self.draw_start() +
+                      self.draw_stop())
+            self.draw_title(box=True)
+            self.ptty(self.draw_start() +
                       self.draw_char('hline') * padr +
                       self.draw_char('urcorner') +
                       self.draw_stop() +
@@ -187,11 +204,17 @@ class TISelect:
         # Identical, for now.
         self.draw_box_left_side()
     def draw_item(self, item, selected=False):
-        fmt = " %%-%ds " % self.width
-        if selected:
-            self.ptty(self.term['reverse'] + fmt % item + self.term['normal'])
+        if selected and self.term['reverse']:
+            start = self.term['reverse'] + " "
+            stop = " " + self.term['normal']
+        elif selected:
+            start = "*"
+            stop = "*"
         else:
-            self.ptty(fmt % item)
+            start = " "
+            stop = " "
+        fmt = "%s%%-%ds%s" % (start, self.width, stop)
+        self.ptty(fmt % item)
     def draw_rewind(self):
         real_height = self.height
         if self.box:
@@ -201,9 +224,11 @@ class TISelect:
         self.ptty(self.term['t_up'] * real_height + "\n")
     def draw_scrollbar(self, n):
         lineno = round((self.height-1) *
-                       (self.selected / float(len(self.items)-1)))
-        if lineno == n:
+                       (self.selected / max(1, float(len(self.items)-1))))
+        if self.term['reverse'] and lineno == n:
             self.ptty(self.term['reverse'] + '#' + self.term['normal'])
+        elif lineno == n:
+            self.ptty('#')
         else:
             self.draw_box_right_side()
     def draw(self, rewind=True, no_selection=False):
@@ -273,10 +298,32 @@ class TISelect:
             if self.term['c_invis'] and self.term['c_normal']:
                 self.ptty(self.term['c_normal'])
 
-if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        sys.exit("Usage: %s <item1> <item2> [<item3> [...]]" % sys.argv[0])
-    tis = TISelect(sys.argv[1:])
+def main():
+    parser = argparse.ArgumentParser(description=
+        """tiselect (terminal inline select) is a screen-oriented chooser for
+           the command line.  It aims to fit into the natural flow of the
+           command line, rather than taking over the whole terminal view like
+           most dialog(1) equivalents do.  tiselect communicates with /dev/tty
+           and prints the result to standard output, making it easy to use from
+           scripts.""")
+    pa = parser.add_argument
+    pa('items', nargs='+', metavar='<items>',
+       help="Items to choose between.")
+    pa('-b', '--box', dest='box', action='store_true',
+       help="Surround chooser with a box.")
+    pa('-s', '--scrollbar', dest='scrollbar', action='store_true',
+       help="Always display a scrollbar, even if the list fits on screen.")
+    pa('-S', '--no-scrollbar', dest='no_scrollbar', action='store_true',
+       help="Never display a scrollbar, even if scrolling is needed.")
+    pa('-t', '--title', dest='title', metavar='<title>',
+       help="Display a title before the choices.")
+    pa('-H', '--height', dest='height', metavar='<height>', type=int,
+       help="Specifies a max height in lines (default: 1/3 of term size).")
+    pa('-a', '--ascii', dest='ascii', action='store_true',
+       help="ASCII drawing characters only.")
+    args = parser.parse_args()
+
+    tis = TISelect(args.items, args)
     try:
         tis.run()
     except KeyboardInterrupt:
@@ -285,3 +332,6 @@ if __name__ == '__main__':
         tis.draw(no_selection=True)
         tis.ptty("\n")
         sys.exit(1)
+
+if __name__ == '__main__':
+    main()
