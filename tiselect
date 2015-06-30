@@ -17,11 +17,12 @@
 #
 # DONE: Handle lists longer than terminal (scrolling?)
 # DONE: Box
-# TODO: Options
+# DONE: Options
 # TODO: Paddings, themes (colours?)
-# TODO: Header text
+# DONE: Header text
 # TODO: Python3
 # TODO: Searching?
+# DONE: Unicode string width
 
 import termios, select, os, sys, curses, fcntl, struct, argparse
 
@@ -85,6 +86,14 @@ class TerminalInfo:
         return all(map(lambda x: x in self.acs_table,
                        ['l', 'k', 'q', 'x', 'm', 'j']))
 
+# Dirty hack to get the right width of things that happen to be UTF-8 without
+# having to decode and recode everything through the system.
+def mylen(string):
+    try:
+        return len(string.decode('utf-8'))
+    except UnicodeDecodeError:
+        return len(string)
+
 class TISelect:
     def __init__(self, items, opts):
         self.items = items
@@ -95,9 +104,9 @@ class TISelect:
         if not self.term['t_up']:
             sys.exit("Error: Terminal has no cursor up capability.")
         self.selected = 0
-        self.width = min(max(map(len, self.items + [self.title])),
+        self.width = min(max(map(mylen, self.items + [self.title])),
                          self.term.w - 6)
-        if len(self.title) > self.width:
+        if mylen(self.title) > self.width:
             self.title = self.title[:self.width-3] + '...'
         if opts.height:
             self.height = min(len(items), opts.height)
@@ -111,7 +120,7 @@ class TISelect:
     def ptty(self, stuff):
         self.term.tty_out.write(stuff)
     def crop_item(self, item):
-        if len(item) > self.width:
+        if mylen(item) > self.width:
             return item[:self.width-3] + '...'
         else:
             return item
@@ -160,7 +169,7 @@ class TISelect:
                       self.title +
                       (self.term['normal'] or '*') + ' ')
         else:
-            pad = ((self.width + 2) - len(self.title)) / 2
+            pad = ((self.width + 2) - mylen(self.title)) / 2
             self.ptty(' ' * pad +
                       (self.term['bold'] or '*') +
                       self.title +
@@ -168,9 +177,9 @@ class TISelect:
                       "\n")
     def draw_box_top(self):
         if self.title:
-            padl = ((self.width + 2) - (len(self.title) + 2)) / 2
+            padl = ((self.width + 2) - (mylen(self.title) + 2)) / 2
             padr = padl
-            if padl + padr + len(self.title) + 2 != self.width + 2:
+            if padl + padr + mylen(self.title) + 2 != self.width + 2:
                 padr += 1
             self.ptty(self.draw_start() +
                       self.draw_char('ulcorner') +
