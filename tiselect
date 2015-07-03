@@ -55,7 +55,8 @@ class TerminalInfo:
             'c_normal': _ti('cnorm'),
             'acsc':     _ti('acsc'),
             'smacs':    _ti('smacs'),
-            'rmacs':    _ti('rmacs')
+            'rmacs':    _ti('rmacs'),
+            'escape':   '\33'
         }
         # ACS is weird, from what I can understand, the string gives, in pairs,
         # the VT100 character, documented in terminfo(5), followed by the
@@ -87,7 +88,9 @@ class TerminalInfo:
                        ['l', 'k', 'q', 'x', 'm', 'j']))
 
 # Dirty hack to get the right width of things that happen to be UTF-8 without
-# having to decode and recode everything through the system.
+# having to decode and recode everything through the system.  This still
+# returns the wrong results for mixed-charset strings (ie binary junk).  I see
+# no easy way around that.
 def mylen(string):
     try:
         return len(string.decode('utf-8'))
@@ -109,7 +112,7 @@ class TISelect:
         if mylen(self.title) > self.width:
             self.title = self.title[:self.width-3] + '...'
         if opts.height:
-            self.height = min(len(items), opts.height)
+            self.height = min(len(items), opts.height, self.term.h)
         else:
             self.height = min(len(items), self.term.h / 3)
         if (self.height < len(items) and not opts.no_scrollbar) or opts.scrollbar:
@@ -285,13 +288,15 @@ class TISelect:
             self.ptty("\n")
             print self.items[self.selected]
             sys.exit(0)
+        elif stuff == self.term['escape']:
+            raise KeyboardInterrupt
         else:
             return
         self.draw()
     def run(self):
         old = termios.tcgetattr(self.term.tty_in)
         new = termios.tcgetattr(self.term.tty_in)
-        new[3] = new[3] & ~(termios.ECHO | termios.ICANON)
+        new[3] &= ~(termios.ECHO | termios.ICANON)
 
         try:
             termios.tcsetattr(self.term.tty_in, termios.TCSADRAIN, new)
