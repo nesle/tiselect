@@ -18,11 +18,12 @@
 # DONE: Handle lists longer than terminal (scrolling?)
 # DONE: Box
 # DONE: Options
-# TODO: Paddings, themes (colours?)
 # DONE: Header text
+# DONE: Unicode string width
+# TODO: Paddings, themes (colours?)
 # TODO: Python3
 # TODO: Searching?
-# DONE: Unicode string width
+# TODO: Multiple selections?
 
 import termios, select, os, sys, curses, fcntl, struct, argparse
 
@@ -119,6 +120,12 @@ class TISelect:
             self.scrollbar = True
         else:
             self.scrollbar = False
+        if opts.center and opts.box:
+            self.center_pad = max(0, ((self.term.w - self.width) / 2) - 2)
+        elif opts.center:
+            self.center_pad = max(0, (self.term.w - self.width) / 2)
+        else:
+            self.center_pad = 0
         self.draw_init()
     def ptty(self, stuff):
         self.term.tty_out.write(stuff)
@@ -172,8 +179,7 @@ class TISelect:
                       self.title +
                       (self.term['normal'] or '*') + ' ')
         else:
-            pad = ((self.width + 2) - mylen(self.title)) / 2
-            self.ptty(' ' * pad +
+            self.ptty(' ' +
                       (self.term['bold'] or '*') +
                       self.title +
                       (self.term['normal'] or '*') +
@@ -202,8 +208,7 @@ class TISelect:
                       self.draw_stop() +
                       "\n")
     def draw_box_bottom(self):
-        self.ptty("\n" +
-                  self.draw_start() +
+        self.ptty(self.draw_start() +
                   self.draw_char('llcorner') +
                   self.draw_char('hline') * (self.width + 2) +
                   self.draw_char('lrcorner') +
@@ -247,6 +252,8 @@ class TISelect:
         if rewind:
             self.draw_rewind()
         count = 0
+        if self.center_pad > 0 and (self.box or self.title):
+            self.ptty(' ' * self.center_pad)
         if self.box:
             self.draw_box_top()
         elif self.title:
@@ -255,6 +262,8 @@ class TISelect:
             if not self.visible(i):
                 continue
             it = self.crop_item(item)
+            if self.center_pad > 0:
+                self.ptty(' ' * self.center_pad)
             if self.box:
                 self.draw_box_left_side()
             if i == self.selected and not no_selection:
@@ -269,6 +278,9 @@ class TISelect:
                 self.ptty("\n")
             count += 1
         if self.box:
+            self.ptty('\n')
+            if self.center_pad > 0:
+                self.ptty(' ' * self.center_pad)
             self.draw_box_bottom()
     def update(self):
         stuff = os.read(self.term.tty_in.fileno(), 512)
@@ -335,6 +347,8 @@ def main():
        help="Specifies a max height in lines (default: 1/3 of term size).")
     pa('-a', '--ascii', dest='ascii', action='store_true',
        help="ASCII drawing characters only.")
+    pa('-c', '--center', dest='center', action='store_true',
+       help="Center chooser on the terminal")
     args = parser.parse_args()
 
     tis = TISelect(args.items, args)
