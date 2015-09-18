@@ -85,8 +85,7 @@ class TerminalInfo:
         if self.w == 0:
             self.w = 80
     def has_full_acs(self):
-        return all(map(lambda x: x in self.acs_table,
-                       ['l', 'k', 'q', 'x', 'm', 'j']))
+        return all(c in self.acs_table for c in 'lkqxmj')
 
 # Dirty hack to get the right width of things that happen to be UTF-8 without
 # having to decode and recode everything through the system.  This still
@@ -186,9 +185,9 @@ class TISelect:
                       "\n")
     def draw_box_top(self):
         if self.title:
-            padl = ((self.width + 2) - (mylen(self.title) + 2)) / 2
+            padl = (self.width - mylen(self.title)) / 2
             padr = padl
-            if padl + padr + mylen(self.title) + 2 != self.width + 2:
+            if padl + padr + mylen(self.title) != self.width:
                 padr += 1
             self.ptty(self.draw_start() +
                       self.draw_char('ulcorner') +
