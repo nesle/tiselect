@@ -94,7 +94,7 @@ class TerminalInfo:
 # no easy way around that.
 def mylen(string):
     try:
-        return len(string.decode('utf-8'))
+        return len(string.decode('utf-8', errors='replace'))
     except UnicodeDecodeError:
         return len(string)
 
