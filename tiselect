@@ -57,6 +57,7 @@ class TerminalInfo:
             'acsc':     _ti('acsc'),
             'smacs':    _ti('smacs'),
             'rmacs':    _ti('rmacs'),
+            'clear':    _ti('ed'),
             'escape':   '\33'
         }
         # ACS is weird, from what I can understand, the string gives, in pairs,
@@ -231,13 +232,15 @@ class TISelect:
             stop = " "
         fmt = "%s%%-%ds%s" % (start, self.width, stop)
         self.ptty(fmt % item)
-    def draw_rewind(self):
+    def draw_rewind(self, clear=False):
         real_height = self.height
         if self.box:
             real_height += 2
         elif self.title:
             real_height += 1
         self.ptty(self.term['t_up'] * real_height + "\n")
+        if clear:
+            self.ptty(self.term['clear'])
     def draw_scrollbar(self, n):
         lineno = round((self.height-1) *
                        (self.selected / max(1, float(len(self.items)-1))))
@@ -296,7 +299,10 @@ class TISelect:
         elif stuff in (' ', self.term['pgdn']):
             self.selected = min(len(self.items)-1, self.selected + self.height)
         elif stuff == self.term['enter']:
-            self.ptty("\n")
+            if self.opts.reset:
+                self.draw_rewind(clear=True)
+            else:
+                self.ptty("\n")
             print self.items[self.selected]
             sys.exit(0)
         elif stuff == self.term['escape']:
@@ -348,6 +354,8 @@ def main():
        help="ASCII drawing characters only.")
     pa('-c', '--center', dest='center', action='store_true',
        help="Center chooser on the terminal")
+    pa('-r', '--reset', dest='reset', action='store_true',
+       help="Clear drawing area and move cursor to its first line on exit.")
     args = parser.parse_args()
 
     tis = TISelect(args.items, args)
